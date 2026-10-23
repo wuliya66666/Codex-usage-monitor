@@ -1,12 +1,14 @@
 # CodexUsage-WLY
 
+**[Download the latest Windows x64 EXE](https://github.com/wuliya66666/Codex-usage-monitor/releases/latest/download/codex-usage.exe)** — save it to a writable folder and double-click. No Rust toolchain or separate font installation is needed. Sign in to your own Codex account on that PC and keep its network or proxy working. The executable is unsigned, so Windows may show a reputation warning. Source updates pushed to `main` are tested, built and published automatically.
+
 A customized fork of [upstream-ray/codex-usage-monitor](https://github.com/upstream-ray/codex-usage-monitor), based on version 1.10.0. Original author credits and the MIT license are retained. Bundled Source Han Sans fonts retain their SIL Open Font License in `assets/fonts/LICENSE.txt`.
 
 ![WLY dashboard preview](.github/wly-preview.png)
 
 The preview uses example values. This version adds a compact side-by-side ring dashboard, embedded Source Han Sans HW SC Bold, transparent antialiased rendering, and Windows static system proxy support for quota requests. See [WLY changes, build instructions and limitations](CHANGES-WLY.md) or [简体中文](README.zh-CN.md).
 
-`*` means the displayed quota is cached after a failed or overdue refresh. The existing installer and in-app update mechanism still point to the upstream project: using them can replace this customized build with the upstream version. Build this fork with `build.cmd` to retain the WLY dashboard. This upload does not include a WLY binary release.
+`*` means the displayed quota is cached after a failed or overdue refresh. The installer and in-app update mechanism point to this WLY repository.
 
 ---
 

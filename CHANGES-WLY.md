@@ -34,7 +34,7 @@ cargo build --release
 
 - 星号 `*` 表示缓存数据未能按时刷新，可能由连接失败等原因引起；获取新数据成功后自动清除。
 - 系统代理支持不能保证代理服务或远端接口始终可达，网络失败时保留缓存并继续重试。
-- 安装脚本及程序内更新仍使用上游地址；更新可能恢复原版界面。本次未修改更新机制，也未发布 WLY 专用 EXE Release。
+- 安装脚本及程序内更新已指向本 WLY 仓库。
 - 上游原 README 与动图保留作来源资料；本页和首页 WLY 预览说明本修改版的差异。
 
 ## 验证
@@ -46,3 +46,12 @@ cargo build --release
 - 上游项目：[upstream-ray/codex-usage-monitor](https://github.com/upstream-ray/codex-usage-monitor)。
 - 原项目 MIT 版权与许可文本完整保留于 `LICENSE`，图标声明保留于 `src/icons/providers/`。
 - Adobe Source Han Sans 字体的版权、保留字体名称及 SIL Open Font License 完整保留于 `assets/fonts/LICENSE.txt`。
+
+## 1.10.1：固定位置与自动发布
+
+- “显示器”选择已移到右键主菜单。
+- 右键主菜单新增“固定当前位置”：记录所选显示器和逻辑坐标，重启恢复并禁止拖动，托盘宽度改变时不漂移。取消勾选可移动；手动重置、切换显示器或固定最左侧会解除当前固定。设置保存在各台电脑自己的用户目录，不打包进 EXE。
+- 本地 71 项测试通过；隔离设置下连续两次实际启动恢复相同位置。跨屏和缩放完整实机回归仍未完成。
+- 每次推送 main（或手动运行 Release 工作流）会先检查格式和测试，再编译 Windows x64 EXE，附 SHA256 和代码、字体许可证发布到 Releases。标签带运行编号，保留每次发布所对应的源码提交。
+- 更新功能按 Cargo.toml 的主版本、次版本、修订号判断新版本；后续功能更新时应递增版本，提交 Cargo.lock，测试后同步 main。程序及安装脚本的来源为本 WLY 仓库。
+- 下载入口：[最新版 codex-usage.exe](https://github.com/wuliya66666/Codex-usage-monitor/releases/latest/download/codex-usage.exe)。其他 Windows 10/11 x64 电脑下载后可直接运行，仍需本机 Codex 登录和可用网络。EXE 未进行数字签名，不附带任何账号凭据。

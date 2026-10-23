@@ -1,12 +1,14 @@
 # CodexUsage-WLY 修改版
 
+**[直接下载最新版 Windows x64 EXE](https://github.com/wuliya66666/Codex-usage-monitor/releases/latest/download/codex-usage.exe)**：保存到可写文件夹后双击运行，无需编译或另外安装字体。目标电脑需登录自己的 Codex 账号，并保持网络或代理可用。EXE 未做数字签名，首次下载可能显示 Windows 信誉提示。以后源码推送到 `main` 后，会自动测试、编译和发布下载版。
+
 本项目 fork 自 [upstream-ray/codex-usage-monitor](https://github.com/upstream-ray/codex-usage-monitor)，基于 1.10.0 修改。保留原作者声明与 MIT 许可证；内置思源字体的 SIL Open Font License 见 `assets/fonts/LICENSE.txt`。
 
 ![双圆环界面预览](.github/wly-preview.png)
 
 预览为示例数据。本版采用紧凑的左右双圆环、透明抗锯齿绘制、内置思源等宽粗体，并支持额度查询使用 Windows 静态系统代理。修改、构建和限制详见 [CHANGES-WLY.md](CHANGES-WLY.md)。
 
-星号 `*` 表示刷新失败或超时，正在显示上次成功获取的缓存数据。原安装脚本和程序内更新仍指向上游，使用后可能覆盖本修改版；需要保留 WLY 界面时请使用本仓库的 `build.cmd` 构建。本次上传尚未发布 WLY 专用 EXE Release。
+星号 `*` 表示刷新失败或超时，正在显示上次成功获取的缓存数据。安装脚本和程序内更新已指向本 WLY 仓库。
 
 ---
 

@@ -100,6 +100,7 @@ struct AppState {
     monitor_device: Option<String>,
     tray_offset: i32,
     anchor_left: bool,
+    fixed_x: Option<i32>,
     dragging: bool,
     drag_start_mouse_x: i32,
     drag_start_client_x: i32,
@@ -131,6 +132,7 @@ const IDM_ADAPTIVE_REFRESH: u16 = 14;
 const IDM_START_WITH_WINDOWS: u16 = 20;
 const IDM_RESET_POSITION: u16 = 30;
 const IDM_ANCHOR_LEFT: u16 = 34;
+const IDM_FIXED_POSITION: u16 = 35;
 const IDM_VERSION_ACTION: u16 = 31;
 const IDM_LANG_SYSTEM: u16 = 40;
 const IDM_LANG_ENGLISH: u16 = 41;
@@ -430,6 +432,8 @@ struct SettingsFile {
     tray_offset: i32,
     #[serde(default)]
     anchor_left: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixed_x: Option<i32>,
     #[serde(default)]
     taskbar_index: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +471,7 @@ impl Default for SettingsFile {
         Self {
             tray_offset: 0,
             anchor_left: false,
+            fixed_x: None,
             taskbar_index: 0,
             monitor_device: None,
             poll_interval_ms: default_poll_interval(),
@@ -598,6 +603,7 @@ fn save_state_settings() {
         state.as_ref().map(|s| SettingsFile {
             tray_offset: s.tray_offset,
             anchor_left: s.anchor_left,
+            fixed_x: s.fixed_x,
             taskbar_index: s.taskbar_index,
             monitor_device: s.monitor_device.clone(),
             poll_interval_ms: s.poll_interval_ms,
@@ -1646,6 +1652,12 @@ fn is_drag_handle_point(client_x: i32, client_y: i32) -> bool {
 }
 
 fn cursor_is_on_drag_handle(hwnd: HWND) -> bool {
+    if lock_state()
+        .as_ref()
+        .is_some_and(|s| s.anchor_left || s.fixed_x.is_some())
+    {
+        return false;
+    }
     unsafe {
         let mut pt = POINT::default();
         if GetCursorPos(&mut pt).is_err() || !ScreenToClient(hwnd, &mut pt).as_bool() {
@@ -2072,6 +2084,7 @@ pub fn run() {
                 monitor_device: settings.monitor_device.clone(),
                 tray_offset: settings.tray_offset,
                 anchor_left: settings.anchor_left,
+                fixed_x: settings.fixed_x,
                 dragging: false,
                 drag_start_mouse_x: 0,
                 drag_start_client_x: 0,
@@ -2975,7 +2988,7 @@ fn position_at_taskbar() {
     refresh_dpi();
     // Drop the app-state lock before any Win32 call that may synchronously
     // re-enter our window procedure.
-    let (hwnd, embedded, tray_offset, anchor_left, taskbar_hwnd) = {
+    let (hwnd, embedded, tray_offset, anchor_left, fixed_x, taskbar_hwnd) = {
         let state = lock_state();
         let s = match state.as_ref() {
             Some(s) => s,
@@ -3000,6 +3013,7 @@ fn position_at_taskbar() {
             s.embedded,
             s.tray_offset,
             s.anchor_left,
+            s.fixed_x.map(sc),
             taskbar_hwnd,
         )
     };
@@ -3029,7 +3043,7 @@ fn position_at_taskbar() {
     let offset_changed = {
         let mut state = lock_state();
         if let Some(s) = state.as_mut() {
-            if !anchor_left && s.tray_offset != tray_offset {
+            if !anchor_left && fixed_x.is_none() && s.tray_offset != tray_offset {
                 s.tray_offset = tray_offset;
                 true
             } else {
@@ -3053,6 +3067,8 @@ fn position_at_taskbar() {
             widget_width,
             tray_offset,
             anchor_left,
+            fixed_x,
+            taskbar_rect.right,
         ) - taskbar_rect.left;
         native_interop::move_window(hwnd, x, y - taskbar_rect.top, widget_width, widget_height);
         diagnose::log(format!(
@@ -3067,6 +3083,8 @@ fn position_at_taskbar() {
             widget_width,
             tray_offset,
             anchor_left,
+            fixed_x,
+            taskbar_rect.right,
         );
         native_interop::move_window(hwnd, x, y, widget_width, widget_height);
         diagnose::log(format!(
@@ -3081,8 +3099,12 @@ fn compute_anchor_x(
     width: i32,
     offset: i32,
     anchor_left: bool,
+    fixed_x: Option<i32>,
+    taskbar_right: i32,
 ) -> i32 {
-    if anchor_left {
+    if let Some(x) = fixed_x {
+        taskbar_left + x.clamp(0, (taskbar_right - taskbar_left - width).max(0))
+    } else if anchor_left {
         taskbar_left
     } else {
         (tray_left - width - offset).max(taskbar_left)
@@ -3335,7 +3357,7 @@ unsafe extern "system" fn wnd_proc(
             let _ = GetCursorPos(&mut pt);
             let mut state = lock_state();
             if let Some(s) = state.as_mut() {
-                if s.anchor_left {
+                if s.anchor_left || s.fixed_x.is_some() {
                     return LRESULT(0);
                 }
                 s.dragging = true;
@@ -3561,6 +3583,7 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(s) = state.as_mut() {
                             s.tray_offset = 0;
                             s.anchor_left = false;
+                            s.fixed_x = None;
                         }
                     }
                     save_state_settings();
@@ -3571,10 +3594,46 @@ unsafe extern "system" fn wnd_proc(
                         let mut state = lock_state();
                         if let Some(s) = state.as_mut() {
                             s.anchor_left = !s.anchor_left;
+                            s.fixed_x = None;
                         }
                     }
                     save_state_settings();
                     position_at_taskbar();
+                }
+                IDM_FIXED_POSITION => {
+                    let taskbar_hwnd = lock_state().as_ref().and_then(|s| s.taskbar_hwnd);
+                    let taskbar = native_interop::find_taskbars()
+                        .into_iter()
+                        .enumerate()
+                        .find(|(_, taskbar)| Some(taskbar.hwnd) == taskbar_hwnd);
+                    if let (Some(rect), Some((index, taskbar))) =
+                        (native_interop::get_window_rect_safe(hwnd), taskbar)
+                    {
+                        refresh_dpi();
+                        let x = ((rect.left - taskbar.rect.left) as f64 * 96.0
+                            / CURRENT_DPI.load(Ordering::Relaxed) as f64)
+                            .round() as i32;
+                        let offset = clamp_offset_for_taskbar(
+                            taskbar.hwnd,
+                            taskbar.rect,
+                            tray_left_for_taskbar(taskbar.hwnd, taskbar.rect) - rect.right,
+                        );
+                        let device = native_interop::taskbar_monitor_device(&taskbar);
+                        {
+                            let mut state = lock_state();
+                            if let Some(s) = state.as_mut() {
+                                s.fixed_x = s.fixed_x.is_none().then_some(x);
+                                s.dragging = false;
+                                s.anchor_left = false;
+                                s.tray_offset = offset;
+                                s.taskbar_index = index;
+                                s.monitor_device = device;
+                            }
+                        }
+                        let _ = ReleaseCapture();
+                        save_state_settings();
+                        position_at_taskbar();
+                    }
                 }
                 id if (IDM_MONITOR_FIRST..IDM_MONITOR_FIRST + MAX_MONITOR_MENU_ITEMS as u16)
                     .contains(&id) =>
@@ -3588,6 +3647,7 @@ unsafe extern "system" fn wnd_proc(
                                     s.monitor_device =
                                         native_interop::taskbar_monitor_device(&taskbar);
                                     s.tray_offset = 0;
+                                    s.fixed_x = None;
                                 }
                             }
                             save_state_settings();
@@ -4335,6 +4395,18 @@ fn show_context_menu(hwnd: HWND) {
             PCWSTR::from_raw(reset_pos_str.as_ptr()),
         );
 
+        let position_fixed = lock_state().as_ref().is_some_and(|s| s.fixed_x.is_some());
+        append_appearance_choice(
+            menu,
+            IDM_FIXED_POSITION,
+            position_fixed,
+            if language == LanguageId::SimplifiedChinese {
+                "固定当前位置"
+            } else {
+                "Lock current position"
+            },
+        );
+
         let taskbars = native_interop::find_taskbars();
         if taskbars.len() > 1 {
             let selected_taskbar = {
@@ -4369,7 +4441,7 @@ fn show_context_menu(hwnd: HWND) {
                 "Display"
             });
             let _ = AppendMenuW(
-                settings_menu,
+                menu,
                 MF_POPUP,
                 monitor_menu.0 as usize,
                 PCWSTR::from_raw(label.as_ptr()),
@@ -5075,14 +5147,76 @@ mod tests {
             for tray_width in [1600, 1800, 2000] {
                 for widget_width in [480, 606, 970] {
                     assert_eq!(
-                        compute_anchor_x(left, left + tray_width, widget_width, 321, true),
+                        compute_anchor_x(
+                            left,
+                            left + tray_width,
+                            widget_width,
+                            321,
+                            true,
+                            None,
+                            left + 2560
+                        ),
                         left
                     );
                 }
             }
         }
-        assert_eq!(compute_anchor_x(0, 300, 606, 321, true), 0);
-        assert_eq!(compute_anchor_x(0, 2000, 606, 321, false), 1073);
+        assert_eq!(compute_anchor_x(0, 300, 606, 321, true, None, 2560), 0);
+        assert_eq!(compute_anchor_x(0, 2000, 606, 321, false, None, 2560), 1073);
+    }
+
+    #[test]
+    fn fixed_position_ignores_tray_changes_and_stays_on_screen() {
+        for left in [0, -2560, 2560] {
+            for tray_width in [1400, 1600, 2000] {
+                assert_eq!(
+                    compute_anchor_x(
+                        left,
+                        left + tray_width,
+                        202,
+                        130,
+                        false,
+                        Some(1500),
+                        left + 2560
+                    ),
+                    left + 1500
+                );
+            }
+        }
+        assert_eq!(
+            compute_anchor_x(0, 900, 202, 0, false, Some(1500), 1280),
+            1078
+        );
+        assert_eq!(compute_anchor_x(0, 900, 202, 0, false, Some(-10), 1280), 0);
+        assert_eq!(compute_anchor_x(0, 100, 202, 0, false, Some(1500), 100), 0);
+    }
+
+    #[test]
+    fn fixed_position_and_monitor_survive_restart_without_enabling_legacy_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("quota-fixed-position-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let settings = SettingsFile {
+            fixed_x: Some(1500),
+            monitor_device: Some(r"\\.\DISPLAY2".to_string()),
+            ..SettingsFile::default()
+        };
+        settings_store::save(&path, || Some(settings.clone())).unwrap();
+        let (loaded, migrated) =
+            load_settings_from_paths(&path, &directory.join("legacy.json")).unwrap();
+        assert!(!migrated);
+        assert_eq!(loaded.fixed_x, Some(1500));
+        assert_eq!(loaded.monitor_device, settings.monitor_device);
+        assert_eq!(
+            compute_anchor_x(-2560, -400, 202, 0, false, loaded.fixed_x, 0),
+            -1060
+        );
+        assert!(serde_json::from_str::<SettingsFile>("{}")
+            .unwrap()
+            .fixed_x
+            .is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -21,6 +22,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Check formatting and tests
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build release binary
         run: cargo build --release
 
@@ -31,6 +39,11 @@ jobs:
           Copy-Item target/release/codex-usage.exe dist/codex-usage.exe
           Copy-Item scripts/install.ps1 dist/install.ps1
           Copy-Item scripts/uninstall.ps1 dist/uninstall.ps1
+          Copy-Item LICENSE dist/LICENSE.txt
+          Copy-Item assets/fonts/LICENSE.txt dist/FONT-LICENSE.txt
+
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          "RELEASE_TAG=v$version-wly.$env:GITHUB_RUN_NUMBER" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
           $hash = (Get-FileHash -Algorithm SHA256 dist/codex-usage.exe).Hash.ToLowerInvariant()
           "$hash  codex-usage.exe" | Set-Content -Encoding ascii dist/codex-usage.exe.sha256
@@ -38,9 +51,20 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: CodexUsage-WLY ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Windows 10/11 x64：下载 codex-usage.exe，放到可写文件夹后双击运行，无需编译或安装字体。
+            需要在目标电脑登录自己的 Codex 账号，并保持网络或代理可用。
+            包含双圆环界面、Windows 静态系统代理支持、主菜单显示器选择及固定当前位置开关。
+            本 EXE 未做数字签名，首次下载可能显示 Windows 信誉提示。
           files: |
             dist/codex-usage.exe
             dist/codex-usage.exe.sha256
             dist/install.ps1
             dist/uninstall.ps1
+            dist/LICENSE.txt
+            dist/FONT-LICENSE.txt
           generate_release_notes: true
