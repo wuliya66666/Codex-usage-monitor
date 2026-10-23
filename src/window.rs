@@ -25,7 +25,7 @@ use crate::native_interop::{
     TIMER_UPDATE_CHECK, WM_APP_TRAY, WM_APP_USAGE_UPDATED,
 };
 use crate::poller;
-use crate::provider_icons::{self, Provider};
+use crate::provider_icons;
 use crate::provider_poll;
 use crate::quota_refresh;
 use crate::quota_text;
@@ -169,6 +169,8 @@ const MAX_MONITOR_MENU_ITEMS: usize = 100;
 
 const WM_DPICHANGED_MSG: u32 = 0x02E0;
 const WM_APP_UPDATE_CHECK_COMPLETE: u32 = WM_APP + 2;
+const WM_APP_SHOW_WIDGET: u32 = WM_APP + 30;
+const WM_APP_CLAUDE_DETECTED: u32 = WM_APP + 31;
 const TRAY_ICON_UPDATE_REPOSITION_SUPPRESS_MS: u64 = 750;
 
 /// How often the watchdog thread polls for an explorer.exe restart (which
@@ -417,7 +419,7 @@ impl Appearance {
     fn bar_height(self) -> i32 {
         sc(match self.bar_thickness {
             BarThickness::Standard => SEGMENT_H,
-            BarThickness::Slim => 8,
+            BarThickness::Slim => 6,
         })
     }
 }
@@ -925,7 +927,10 @@ fn attach_to_taskbar(hwnd: HWND, requested_index: usize) -> bool {
         native_interop::unhook_win_event(hook);
     }
 
-    native_interop::embed_in_taskbar(hwnd, taskbar.hwnd);
+    if !native_interop::embed_in_taskbar(hwnd, taskbar.hwnd) {
+        diagnose::log("taskbar reparent failed; keeping previous selection");
+        return false;
+    }
 
     let tray_notify = native_interop::find_child_window(taskbar.hwnd, "TrayNotifyWnd");
     if tray_notify.is_some() {
@@ -944,13 +949,21 @@ fn attach_to_taskbar(hwnd: HWND, requested_index: usize) -> bool {
         diagnose::log("tray event hook could not be installed");
     }
 
-    let mut state = lock_state();
-    if let Some(s) = state.as_mut() {
-        s.taskbar_hwnd = Some(taskbar.hwnd);
-        s.tray_notify_hwnd = tray_notify;
-        s.win_event_hook = hook;
-        s.taskbar_index = index;
-        s.embedded = true;
+    let visible = {
+        let mut state = lock_state();
+        if let Some(s) = state.as_mut() {
+            s.taskbar_hwnd = Some(taskbar.hwnd);
+            s.tray_notify_hwnd = tray_notify;
+            s.win_event_hook = hook;
+            s.taskbar_index = index;
+            s.embedded = true;
+            s.widget_visible
+        } else {
+            false
+        }
+    };
+    unsafe {
+        let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
     }
     true
 }
@@ -1608,31 +1621,28 @@ fn set_startup_enabled(enable: bool) {
 }
 
 // Dimensions matching the C# version
-const SEGMENT_W: i32 = 10;
-const SEGMENT_H: i32 = 13;
-const ROW_HEIGHT: i32 = 18;
+const SEGMENT_W: i32 = 6;
+const SEGMENT_H: i32 = 9;
+const ROW_HEIGHT: i32 = 17;
 const SEGMENT_GAP: i32 = 1;
 const SEGMENT_COUNT: i32 = 10;
 
 const LEFT_DIVIDER_W: i32 = 3;
 const DIVIDER_RIGHT_MARGIN: i32 = 10;
-const LABEL_WIDTH: i32 = 18;
-const LABEL_RIGHT_MARGIN: i32 = 10;
+const LABEL_WIDTH: i32 = 0;
+const LABEL_RIGHT_MARGIN: i32 = 0;
 const BAR_RIGHT_MARGIN: i32 = 4;
 const TEXT_WIDTH: i32 = 110;
-const SIMPLIFIED_CHINESE_LABEL_WIDTH: i32 = 20;
-const SIMPLIFIED_CHINESE_TEXT_WIDTH: i32 = 138;
+const SIMPLIFIED_CHINESE_LABEL_WIDTH: i32 = 0;
+const SIMPLIFIED_CHINESE_TEXT_WIDTH: i32 = 110;
 const MODEL_RIGHT_MARGIN: i32 = 3;
 const RIGHT_MARGIN: i32 = 1;
 const WIDGET_HEIGHT: i32 = 46;
 
 fn is_drag_handle_point(client_x: i32, client_y: i32) -> bool {
-    let divider_h = sc(25);
-    let divider_top = (sc(WIDGET_HEIGHT) - divider_h) / 2;
-    client_x >= 0
-        && client_x < sc(LEFT_DIVIDER_W)
-        && client_y >= divider_top
-        && client_y < divider_top + divider_h
+    // Mouse-down is delivered in the widget client area. Let the user grab
+    // the bars or text instead of hunting for a three-pixel divider.
+    client_x >= 0 && client_y >= 0 && client_y < sc(WIDGET_HEIGHT)
 }
 
 fn cursor_is_on_drag_handle(hwnd: HWND) -> bool {
@@ -1662,7 +1672,7 @@ fn usage_layout_samples(language: LanguageId) -> (Vec<&'static str>, Vec<String>
     let strings = language.strings();
     let labels = vec![strings.session_window, strings.weekly_window];
     let resets = if language == LanguageId::SimplifiedChinese {
-        vec!["23:59重置 *".to_string(), "12/31重置 *".to_string()]
+        vec!["23:59 *".to_string(), "12/31 *".to_string()]
     } else {
         [
             strings.day_suffix,
@@ -1679,16 +1689,16 @@ fn usage_layout_samples(language: LanguageId) -> (Vec<&'static str>, Vec<String>
 }
 
 unsafe fn create_widget_font(appearance: Appearance) -> HFONT {
-    let font_name = native_interop::wide_str("Microsoft YaHei UI");
+    let font_name = native_interop::wide_str("Segoe UI");
     CreateFontW(
         -sc(appearance.font_px()),
         0,
         0,
         0,
         if appearance.palette == Palette::System {
-            FW_SEMIBOLD.0 as i32
+            FW_MEDIUM.0 as i32
         } else {
-            FW_BOLD.0 as i32
+            FW_SEMIBOLD.0 as i32
         },
         0,
         0,
@@ -1696,7 +1706,7 @@ unsafe fn create_widget_font(appearance: Appearance) -> HFONT {
         DEFAULT_CHARSET.0 as u32,
         OUT_TT_PRECIS.0 as u32,
         CLIP_DEFAULT_PRECIS.0 as u32,
-        CLEARTYPE_QUALITY.0 as u32,
+        ANTIALIASED_QUALITY.0 as u32,
         (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
         PCWSTR::from_raw(font_name.as_ptr()),
     )
@@ -1737,7 +1747,7 @@ fn usage_layout_widths(language: LanguageId, appearance: Appearance) -> (i32, i3
             let _ = DeleteObject(font);
             widest
         };
-        let (labels, resets) = usage_layout_samples(language);
+        let (_labels, resets) = usage_layout_samples(language);
         let label_font = create_widget_font(appearance);
         let reset_font = quota_text::create_reset_font(sc(appearance.font_px()));
         let widths = if label_font.is_invalid() || reset_font.is_invalid() {
@@ -1746,7 +1756,7 @@ fn usage_layout_widths(language: LanguageId, appearance: Appearance) -> (i32, i3
             fallback
         } else {
             (
-                measure(label_font, &mut labels.into_iter()) + sc(2),
+                measure(label_font, &mut std::iter::empty::<&str>()),
                 (reset_x + measure(reset_font, &mut resets.iter().map(String::as_str)) + sc(3))
                     .max(fallback.1),
             )
@@ -1765,6 +1775,9 @@ fn usage_percent_for_display(language: LanguageId, used_percentage: f64) -> f64 
 }
 
 fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: Appearance) -> i32 {
+    if active_models == 1 {
+        return sc(crate::dashboard::logical_width(true, true));
+    }
     let bar_segments = row_bar_segment_count(active_models);
     let (label_width, text_width) = usage_layout_widths(language, appearance);
     let model_width = model_usage_width(bar_segments, text_width);
@@ -1779,6 +1792,17 @@ fn total_widget_width_for(active_models: i32, language: LanguageId, appearance: 
 }
 
 fn total_widget_width_for_state(state: &AppState) -> i32 {
+    if active_model_count(
+        state.show_claude_code,
+        state.show_codex,
+        state.show_antigravity,
+    ) == 1
+    {
+        return sc(crate::dashboard::logical_width(
+            state.show_session_window,
+            state.show_weekly_window,
+        ));
+    }
     total_widget_width_for(
         active_model_count(
             state.show_claude_code,
@@ -1791,20 +1815,11 @@ fn total_widget_width_for_state(state: &AppState) -> i32 {
 }
 
 fn total_widget_width() -> i32 {
-    let (active_models, language, appearance) = {
-        let state = lock_state();
-        state
-            .as_ref()
-            .map(|s| {
-                (
-                    active_model_count(s.show_claude_code, s.show_codex, s.show_antigravity),
-                    s.language,
-                    s.appearance,
-                )
-            })
-            .unwrap_or((1, LanguageId::English, Appearance::default()))
-    };
-    total_widget_width_for(active_models, language, appearance)
+    let state = lock_state();
+    state
+        .as_ref()
+        .map(total_widget_width_for_state)
+        .unwrap_or_else(|| sc(crate::dashboard::logical_width(true, true)))
 }
 
 fn claude_accent_color() -> Color {
@@ -1815,7 +1830,7 @@ fn appearance_colors(appearance: Appearance, system_is_dark: bool) -> (Color, Co
     match appearance.palette {
         Palette::System if system_is_dark => (
             Color::from_hex("#1C1C1C"),
-            Color::from_hex("#888888"),
+            Color::from_hex("#E6E6E6"),
             Color::from_hex("#444444"),
         ),
         Palette::System => (
@@ -1867,6 +1882,7 @@ fn antigravity_usage_text_color(is_dark: bool) -> Color {
 }
 
 pub fn run() {
+    let startup_started = Instant::now();
     // Enable Per-Monitor DPI Awareness V2 for crisp rendering at any scale factor
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1894,7 +1910,19 @@ pub fn run() {
                             return;
                         }
                     } else {
-                        diagnose::log("startup aborted: another instance is already running");
+                        let class = native_interop::wide_str("CodexUsage");
+                        let existing = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null())
+                            .ok()
+                            .or_else(|| {
+                                native_interop::find_taskbars().iter().find_map(|taskbar| {
+                                    native_interop::find_child_window(taskbar.hwnd, "CodexUsage")
+                                })
+                            });
+                        if let Some(existing) = existing {
+                            let _ =
+                                PostMessageW(existing, WM_APP_SHOW_WIDGET, WPARAM(0), LPARAM(0));
+                        }
+                        diagnose::log("another instance is running; requested widget display");
                         return;
                     }
                 }
@@ -1936,8 +1964,12 @@ pub fn run() {
             diagnose::log("RegisterClassExW returned 0");
         }
 
-        let claude_code_available = poller::claude_code_credentials_available();
-        let settings = load_settings(claude_code_available);
+        // WSL discovery may take seconds. Defer it until after first paint.
+        // Provisionally preserve saved service selection until it completes.
+        let claude_code_available = true;
+        let mut settings = load_settings(claude_code_available);
+        // Opening the executable recovers a widget hidden in a prior session.
+        settings.widget_visible = true;
         let language_override = settings.language.as_deref().and_then(LanguageId::from_code);
         let language = localization::resolve_language(language_override);
         let install_channel = updater::current_install_channel();
@@ -2088,6 +2120,21 @@ pub fn run() {
 
         // Initial render via UpdateLayeredWindow (for embedded) or InvalidateRect (fallback)
         render_layered();
+
+        diagnose::log(format!(
+            "startup ready elapsed_ms={}",
+            startup_started.elapsed().as_millis()
+        ));
+        let detection_hwnd = SendHwnd::from_hwnd(hwnd);
+        std::thread::spawn(move || {
+            let available = poller::claude_code_credentials_available();
+            let _ = PostMessageW(
+                detection_hwnd.to_hwnd(),
+                WM_APP_CLAUDE_DETECTED,
+                WPARAM(available as usize),
+                LPARAM(0),
+            );
+        });
 
         // Poll timer: 15 minutes
         let initial_poll_ms = {
@@ -2292,7 +2339,7 @@ fn render_layered() {
     }
 
     let accent = claude_accent_color();
-    let (bg_color, text_color, track) = appearance_colors(appearance, is_dark);
+    let (_bg_color, text_color, track) = appearance_colors(appearance, is_dark);
     let codex_accent = provider_icons::codex_color(appearance.is_dark(is_dark));
     let antigravity_accent = antigravity_accent_color();
 
@@ -2326,60 +2373,63 @@ fn render_layered() {
         let old_bmp = SelectObject(mem_dc, dib);
         let pixel_count = (width * height) as usize;
 
-        // Render once with the actual taskbar background colour.
-        // Using an opaque background lets us use CLEARTYPE_QUALITY for
-        // sub-pixel font rendering that matches the rest of the OS.
-        paint_content(
-            mem_dc,
-            width,
-            height,
-            is_dark,
-            appearance,
-            &bg_color,
-            &text_color,
-            &accent,
-            &track,
-            language,
-            strings,
-            session_pct,
-            &session_text,
-            weekly_pct,
-            &weekly_text,
-            codex_session_pct,
-            &codex_session_text,
-            codex_weekly_pct,
-            &codex_weekly_text,
-            antigravity_session_pct,
-            &antigravity_session_text,
-            antigravity_weekly_pct,
-            &antigravity_weekly_text,
-            show_claude_code,
-            show_codex,
-            show_antigravity,
-            show_session_window,
-            show_weekly_window,
-            &codex_accent,
-            &antigravity_accent,
-        );
-
-        // System mode blends with the taskbar. High contrast modes use a solid
-        // backdrop, so text stays legible even over translucent wallpapers.
-        let bg_bgr = bg_color.to_colorref();
-        let bg_alpha = if appearance.palette == Palette::System {
-            1u32
-        } else {
-            255u32
+        let render_pass = |background: &Color| {
+            paint_content(
+                mem_dc,
+                width,
+                height,
+                is_dark,
+                appearance,
+                background,
+                &text_color,
+                &accent,
+                &track,
+                language,
+                strings,
+                session_pct,
+                &session_text,
+                weekly_pct,
+                &weekly_text,
+                codex_session_pct,
+                &codex_session_text,
+                codex_weekly_pct,
+                &codex_weekly_text,
+                antigravity_session_pct,
+                &antigravity_session_text,
+                antigravity_weekly_pct,
+                &antigravity_weekly_text,
+                show_claude_code,
+                show_codex,
+                show_antigravity,
+                show_session_window,
+                show_weekly_window,
+                &codex_accent,
+                &antigravity_accent,
+            )
         };
-        let pixel_data = std::slice::from_raw_parts_mut(bits as *mut u32, pixel_count);
-        for px in pixel_data.iter_mut() {
-            let rgb = *px & 0x00FFFFFF;
-            if rgb == bg_bgr {
-                *px = (bg_alpha << 24) | if bg_alpha == 1 { 0 } else { rgb };
-            } else {
-                *px = rgb | 0xFF000000;
-            }
+        // Recover per-pixel coverage from black/white renders. GDI does not
+        // preserve alpha, so simply making the background transparent leaves
+        // a dark halo around antialiased text on a translucent taskbar.
+        render_pass(&Color::from_hex("#000000"));
+        let _ = GdiFlush();
+        let black_pixels = std::slice::from_raw_parts(bits as *const u32, pixel_count).to_vec();
+        render_pass(&Color::from_hex("#FFFFFF"));
+        let _ = GdiFlush();
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, pixel_count);
+        for (white, black) in pixels.iter_mut().zip(black_pixels) {
+            let difference = [0, 8, 16]
+                .into_iter()
+                .map(|shift| {
+                    (((*white >> shift) & 255) as i32 - ((black >> shift) & 255) as i32)
+                        .clamp(0, 255) as u32
+                })
+                .max()
+                .unwrap_or(255);
+            // Alpha 1 keeps empty areas mouse-interactive, with negligible
+            // visual impact; foreground pixels use premultiplied black RGB.
+            let alpha = (255 - difference).max(1);
+            *white = (alpha << 24) | (black & 0x00FFFFFF);
         }
-
         // Push to window via UpdateLayeredWindow
         let pt_src = POINT { x: 0, y: 0 };
         let sz = SIZE {
@@ -2393,7 +2443,7 @@ fn render_layered() {
             AlphaFormat: 1, // AC_SRC_ALPHA
         };
 
-        let _ = UpdateLayeredWindow(
+        let rendered = UpdateLayeredWindow(
             hwnd,
             screen_dc,
             None,
@@ -2404,6 +2454,9 @@ fn render_layered() {
             Some(&blend),
             ULW_ALPHA,
         );
+        if let Err(error) = rendered {
+            diagnose::log_error("UpdateLayeredWindow failed", error);
+        }
 
         // Cleanup
         SelectObject(mem_dc, old_bmp);
@@ -2467,6 +2520,35 @@ fn paint_content(
         FillRect(hdc, &client_rect, bg_brush);
         let _ = DeleteObject(bg_brush);
 
+        if active_model_count(show_claude_code, show_codex, show_antigravity) == 1 {
+            let (session, weekly) = if show_codex {
+                (
+                    (codex_session_pct, codex_session_text),
+                    (codex_weekly_pct, codex_weekly_text),
+                )
+            } else if show_antigravity {
+                (
+                    (antigravity_session_pct, antigravity_session_text),
+                    (antigravity_weekly_pct, antigravity_weekly_text),
+                )
+            } else {
+                ((session_pct, session_text), (weekly_pct, weekly_text))
+            };
+            crate::dashboard::draw(
+                hdc,
+                width,
+                height,
+                is_dark,
+                appearance.font_size == FontSize::Large,
+                session,
+                weekly,
+                show_session_window,
+                show_weekly_window,
+                sc,
+            );
+            return;
+        }
+
         // Left divider
         let divider_h = sc(25);
         let divider_top = (height - divider_h) / 2;
@@ -2505,11 +2587,7 @@ fn paint_content(
         let _ = DeleteObject(right_brush);
 
         let content_x = sc(LEFT_DIVIDER_W) + sc(DIVIDER_RIGHT_MARGIN);
-        let row_gap = if height < sc(WIDGET_HEIGHT) {
-            sc(2)
-        } else {
-            sc(8)
-        };
+        let row_gap = sc(2);
         let row1_y = (height - 2 * appearance.row_height() - row_gap).max(0) / 2;
         let row2_y = row1_y + appearance.row_height() + row_gap;
         let single_row_y = (height - appearance.row_height()) / 2;
@@ -2520,20 +2598,7 @@ fn paint_content(
         let font = create_widget_font(appearance);
         let old_font = SelectObject(hdc, font);
 
-        // One provider mark per column, centered across the visible quota rows.
-        let icon_size = sc(provider_icons::SIZE);
-        let icon_y = (height - icon_size) / 2;
-        let active_models = active_model_count(show_claude_code, show_codex, show_antigravity);
-        let model_width = model_usage_width(row_bar_segment_count(active_models), text_width)
-            + sc(MODEL_RIGHT_MARGIN);
-        let mut icon_x = content_x + label_width + sc(LABEL_RIGHT_MARGIN);
-        if show_claude_code {
-            provider_icons::draw(hdc, icon_x, icon_y, icon_size, Provider::Claude);
-            icon_x += model_width;
-        }
-        if show_codex {
-            provider_icons::draw(hdc, icon_x, icon_y, icon_size, Provider::Codex);
-        }
+        // Compact taskbar layout: no service logos or reserved logo space.
 
         if show_session_window {
             draw_row(
@@ -3194,6 +3259,39 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        WM_APP_SHOW_WIDGET => {
+            let hidden = {
+                let state = lock_state();
+                state.as_ref().map(|s| !s.widget_visible).unwrap_or(false)
+            };
+            if hidden {
+                toggle_widget_visibility(hwnd);
+            } else {
+                position_at_taskbar();
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                render_layered();
+            }
+            LRESULT(0)
+        }
+        WM_APP_CLAUDE_DETECTED => {
+            {
+                let mut state = lock_state();
+                if let Some(s) = state.as_mut() {
+                    s.claude_code_available = wparam.0 != 0;
+                    if !s.claude_code_available {
+                        s.show_claude_code = false;
+                        if !s.show_codex && !s.show_antigravity {
+                            s.show_codex = true;
+                        }
+                    }
+                }
+            }
+            save_state_settings();
+            position_at_taskbar();
+            render_layered();
+            sync_tray_icons(hwnd);
+            LRESULT(0)
+        }
         WM_APP_USAGE_UPDATED => {
             check_theme_change();
             check_language_change();
@@ -3245,6 +3343,8 @@ unsafe extern "system" fn wnd_proc(
                 s.drag_start_client_x = client_x;
                 s.drag_start_offset = s.tray_offset;
             }
+            // Capture can synchronously re-enter the window procedure.
+            drop(state);
             SetCapture(hwnd);
             LRESULT(0)
         }
@@ -3392,7 +3492,7 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
-        WM_RBUTTONUP => {
+        WM_RBUTTONUP | WM_CONTEXTMENU => {
             show_context_menu(hwnd);
             LRESULT(0)
         }
@@ -4379,9 +4479,50 @@ fn show_context_menu(hwnd: HWND) {
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, None);
+        // Use our own top-level popup as the menu owner. The embedded widget
+        // is a child of Explorer and cannot reliably become foreground.
+        let menu_owner = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            windows::core::w!("STATIC"),
+            windows::core::w!("Codex Usage Menu"),
+            WS_POPUP,
+            pt.x,
+            pt.y,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .ok();
+        let owner = menu_owner.unwrap_or(hwnd);
+        if menu_owner.is_some() {
+            let _ = ShowWindow(owner, SW_SHOWNOACTIVATE);
+        }
+        let _ = SetForegroundWindow(owner);
+        // An embedded taskbar child is not always accepted as the foreground
+        // window. Retrieve the selected item explicitly rather than relying on
+        // menu-loop WM_COMMAND delivery to that child. Dispatch after teardown
+        // so an appearance change can safely resize/repaint the widget.
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+            pt.x,
+            pt.y,
+            0,
+            owner,
+            None,
+        )
+        .0;
         let _ = DestroyMenu(menu);
+        if let Some(owner) = menu_owner {
+            let _ = DestroyWindow(owner);
+        }
+        let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+        if command > 0 {
+            let _ = PostMessageW(hwnd, WM_COMMAND, WPARAM(command as usize), LPARAM(0));
+        }
     }
 }
 
@@ -4506,7 +4647,7 @@ fn draw_row(
     is_dark: bool,
     appearance: Appearance,
     text_color: &Color,
-    label: &str,
+    _label: &str,
     claude_percent: f64,
     claude_text: &str,
     codex_percent: f64,
@@ -4540,26 +4681,12 @@ fn draw_row(
     };
 
     unsafe {
-        let _ = SetTextColor(hdc, COLORREF(text_color.to_colorref()));
-        let mut label_wide: Vec<u16> = label.encode_utf16().collect();
-        let mut label_rect = RECT {
-            left: x,
-            top: y,
-            right: x + label_width,
-            bottom: y + appearance.row_height(),
-        };
-        let _ = DrawTextW(
-            hdc,
-            &mut label_wide,
-            &mut label_rect,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-        );
-
+        // The taskbar rows omit the quota-window labels.
         let mut model_x = x + label_width + sc(LABEL_RIGHT_MARGIN);
         if show_claude_code {
             draw_usage_bar(
                 hdc,
-                model_x + sc(provider_icons::SIZE + provider_icons::RIGHT_MARGIN),
+                model_x,
                 y,
                 segment_count,
                 claude_percent,
@@ -4576,7 +4703,7 @@ fn draw_row(
         if show_codex {
             draw_usage_bar(
                 hdc,
-                model_x + sc(provider_icons::SIZE + provider_icons::RIGHT_MARGIN),
+                model_x,
                 y,
                 segment_count,
                 codex_percent,
@@ -4593,7 +4720,7 @@ fn draw_row(
         if show_antigravity {
             draw_usage_bar(
                 hdc,
-                model_x + sc(provider_icons::SIZE + provider_icons::RIGHT_MARGIN),
+                model_x,
                 y,
                 segment_count,
                 antigravity_percent,
@@ -4610,9 +4737,7 @@ fn draw_row(
 }
 
 fn model_usage_width(segment_count: i32, text_width: i32) -> i32 {
-    sc(provider_icons::SIZE + provider_icons::RIGHT_MARGIN)
-        + (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * segment_count
-        - sc(SEGMENT_GAP)
+    (sc(SEGMENT_W) + sc(SEGMENT_GAP)) * segment_count - sc(SEGMENT_GAP)
         + sc(BAR_RIGHT_MARGIN)
         + text_width
 }
@@ -4772,12 +4897,8 @@ mod tests {
                     let label_font = create_widget_font(appearance);
                     let reset_font = quota_text::create_reset_font(sc(appearance.font_px()));
                     assert!(!label_font.is_invalid() && !reset_font.is_invalid());
-                    let (labels, resets) = usage_layout_samples(language);
-                    for label in labels {
-                        let (width, height) = width_of(label_font, label);
-                        assert!(width <= label_width, "{language:?}: {label:?}");
-                        assert!(height <= appearance.row_height(), "{language:?}: {label:?}");
-                    }
+                    let (_labels, resets) = usage_layout_samples(language);
+                    // Window labels are hidden in the compact taskbar layout.
                     for reset in &resets {
                         let (width, height) = width_of(reset_font, reset);
                         assert!(width <= reset_width, "{language:?}: {reset:?}");

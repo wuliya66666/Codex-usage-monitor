@@ -1,3 +1,17 @@
+# CodexUsage-WLY
+
+A customized fork of [upstream-ray/codex-usage-monitor](https://github.com/upstream-ray/codex-usage-monitor), based on version 1.10.0. Original author credits and the MIT license are retained. Bundled Source Han Sans fonts retain their SIL Open Font License in `assets/fonts/LICENSE.txt`.
+
+![WLY dashboard preview](.github/wly-preview.png)
+
+The preview uses example values. This version adds a compact side-by-side ring dashboard, embedded Source Han Sans HW SC Bold, transparent antialiased rendering, and Windows static system proxy support for quota requests. See [WLY changes, build instructions and limitations](CHANGES-WLY.md) or [简体中文](README.zh-CN.md).
+
+`*` means the displayed quota is cached after a failed or overdue refresh. The existing installer and in-app update mechanism still point to the upstream project: using them can replace this customized build with the upstream version. Build this fork with `build.cmd` to retain the WLY dashboard. This upload does not include a WLY binary release.
+
+---
+
+The following is the original upstream documentation; its screenshots, installation links and appearance descriptions refer to the upstream version.
+
 ![Windows](https://img.shields.io/badge/platform-Windows-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

@@ -530,10 +530,13 @@ fn resolve_windows_codex_path() -> String {
 
 fn build_agent() -> Result<ureq::Agent, PollError> {
     let tls = native_tls::TlsConnector::new().map_err(|_| PollError::RequestFailed)?;
-    Ok(ureq::AgentBuilder::new()
+    let mut builder = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))
-        .tls_connector(std::sync::Arc::new(tls))
-        .build())
+        .tls_connector(std::sync::Arc::new(tls));
+    if let Some(proxy) = crate::system_proxy::request_proxy() {
+        builder = builder.proxy(proxy);
+    }
+    Ok(builder.build())
 }
 
 fn classify_http_status(status: u16) -> PollError {

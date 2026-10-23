@@ -26,7 +26,7 @@ pub fn reset_offset(font_px: i32) -> i32 {
 
 /// `height` is in physical pixels.
 pub unsafe fn create_reset_font(height: i32) -> HFONT {
-    let face = native_interop::wide_str("Microsoft YaHei UI");
+    let face = native_interop::wide_str("Segoe UI");
     CreateFontW(
         -height,
         0,
@@ -39,7 +39,7 @@ pub unsafe fn create_reset_font(height: i32) -> HFONT {
         DEFAULT_CHARSET.0 as u32,
         OUT_TT_PRECIS.0 as u32,
         CLIP_DEFAULT_PRECIS.0 as u32,
-        CLEARTYPE_QUALITY.0 as u32,
+        ANTIALIASED_QUALITY.0 as u32,
         (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
         PCWSTR(face.as_ptr()),
     )
@@ -57,6 +57,7 @@ fn parts(text: &str) -> (&str, &str) {
     (text, "")
 }
 
+#[cfg(test)]
 fn percentage_cells(text: &str) -> Option<String> {
     let digits = text.strip_suffix('%')?;
     if digits.is_empty() || digits.len() > 3 || !digits.chars().all(|c| c.is_ascii_digit()) {
@@ -77,7 +78,7 @@ fn text(hdc: HDC, value: &str, mut rect: RECT, flags: DRAW_TEXT_FORMAT) {
     }
 }
 
-/// Each digit occupies a fixed cell; reset text starts at the same x for
+/// Percentages occupy a fixed column; reset text starts at the same x for
 /// 0%, 9%, 99% and 100%. Status labels remain in the percentage column.
 /// `x`, `y`, `height` and `width` are physical pixels; `font_px` is logical.
 pub fn draw(
@@ -93,6 +94,7 @@ pub fn draw(
     scale: impl Fn(i32) -> i32,
 ) {
     let (percentage, reset) = parts(value);
+    let reset = reset.trim_end_matches("重置");
     let rect = RECT {
         left: x,
         top: y,
@@ -102,34 +104,9 @@ pub fn draw(
     unsafe {
         let _ = SetTextColor(hdc, COLORREF(primary.to_colorref()));
     }
-    if let Some(cells) = percentage_cells(percentage) {
-        for (index, glyph) in cells.chars().enumerate() {
-            if glyph == ' ' {
-                continue;
-            }
-            let left = x + scale(index as i32 * cell(DIGIT_CELL, font_px));
-            let cell_width = cell(
-                if glyph == '%' {
-                    PERCENT_CELL
-                } else {
-                    DIGIT_CELL
-                },
-                font_px,
-            );
-            text(
-                hdc,
-                &glyph.to_string(),
-                RECT {
-                    left,
-                    right: left + scale(cell_width),
-                    ..rect
-                },
-                DT_CENTER,
-            );
-        }
-    } else {
-        text(hdc, percentage, rect, DT_RIGHT);
-    }
+    // Draw a complete run for natural spacing and font hinting. The fixed
+    // percentage-column width still keeps all reset times aligned.
+    text(hdc, percentage, rect, DT_RIGHT);
     if reset.is_empty() {
         return;
     }

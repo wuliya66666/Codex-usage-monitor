@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod dashboard;
 mod diagnose;
 mod localization;
 mod models;
@@ -13,6 +14,7 @@ mod quota_tooltip;
 mod recovery_events;
 mod retry_after;
 mod settings_store;
+mod system_proxy;
 mod theme;
 mod tray_icon;
 mod updater;
@@ -20,6 +22,13 @@ mod window;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--preview") {
+        let ok = args
+            .get(index + 1)
+            .map(|path| dashboard::preview(path).is_ok())
+            .unwrap_or(false);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     let diagnose_enabled = args.iter().any(|arg| arg == "--diagnose");
     if diagnose_enabled {
         match diagnose::init() {

@@ -173,13 +173,14 @@ pub fn get_window_rect_safe(hwnd: HWND) -> Option<RECT> {
 }
 
 /// Embed our window as a child of the taskbar
-pub fn embed_in_taskbar(hwnd: HWND, taskbar_hwnd: HWND) {
+pub fn embed_in_taskbar(hwnd: HWND, taskbar_hwnd: HWND) -> bool {
     unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         // Preserve existing extended style, add tool window + no activate
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
         // Reset alpha mode used by the startup popup fallback before switching
         // back to UpdateLayeredWindow rendering inside the taskbar.
-        if ex_style & WS_EX_LAYERED.0 as i32 != 0 {
+        if style & WS_POPUP_STYLE != 0 && ex_style & WS_EX_LAYERED.0 as i32 != 0 {
             let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_LAYERED.0 as i32));
         }
         let _ = SetWindowLongW(
@@ -189,11 +190,24 @@ pub fn embed_in_taskbar(hwnd: HWND, taskbar_hwnd: HWND) {
         );
 
         // Change from popup to child
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         let new_style = (style & !WS_POPUP_STYLE) | WS_CHILD_STYLE | WS_CLIPSIBLINGS_STYLE;
         let _ = SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
 
         let _ = SetParent(hwnd, taskbar_hwnd);
+        if GetParent(hwnd).ok() != Some(taskbar_hwnd) {
+            let _ = SetWindowLongW(hwnd, GWL_STYLE, style as i32);
+            return false;
+        }
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        true
     }
 }
 
@@ -238,7 +252,7 @@ mod attachment_tests {
             )
             .unwrap();
             SetLayeredWindowAttributes(child, COLORREF(0), 255, LWA_ALPHA).unwrap();
-            embed_in_taskbar(child, parent);
+            assert!(embed_in_taskbar(child, parent));
             assert_eq!(GetParent(child).unwrap(), parent);
             let dc = CreateCompatibleDC(None);
             let info = BITMAPINFO {
@@ -275,6 +289,43 @@ mod attachment_tests {
                 Some(&blend),
                 ULW_ALPHA,
             );
+            assert!(
+                rendered.is_ok(),
+                "initial layered render failed: {rendered:?}"
+            );
+            let second = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("second-taskbar"),
+                WS_POPUP,
+                100,
+                100,
+                40,
+                40,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            // Exercise A -> B -> A repeatedly, keeping the layered surface.
+            for target in [second, parent, second, parent] {
+                assert!(embed_in_taskbar(child, target));
+                assert_eq!(GetParent(child).unwrap(), target);
+                assert!(UpdateLayeredWindow(
+                    child,
+                    None,
+                    Some(&point),
+                    Some(&size),
+                    dc,
+                    Some(&point),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA
+                )
+                .is_ok());
+            }
+            let _ = DestroyWindow(second);
             let _ = SelectObject(dc, old);
             let _ = DeleteObject(bitmap);
             let _ = DeleteDC(dc);
